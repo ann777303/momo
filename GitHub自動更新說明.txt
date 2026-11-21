@@ -1,0 +1,28 @@
+默默 — 用 GitHub 自動更新（只要裝一次）
+
+【第一次設定，約 10 分鐘】
+1. 到 https://github.com 註冊／登入。
+2. 右上角「+」→ New repository
+   - 名稱：momo（隨意，英文）
+   - 選 Public（自動更新需要公開的 Releases）
+   - 按 Create repository
+3. 在新 repo 頁面點「uploading an existing file」，
+   把這個資料夾裡「全部」檔案拖進去（node_modules 不用）：
+   main.js、preload-pet.js、pet.html、icon.png、tray.png、
+   package.json、package-lock.json，以及 .github 資料夾
+   ※ .github 是隱藏資料夾，Windows 檔案總管要開「檢視 → 顯示 → 隱藏的項目」才看得到。
+     拖不進去的話：在 repo 按 Add file → Create new file，
+     檔名打 .github/workflows/release.yml，把 release.yml 內容貼上。
+4. 按 Commit changes。上方「Actions」分頁會開始打包（約 5–8 分鐘，綠勾＝完成）。
+5. 右側「Releases」→ 下載 MoMo-Setup-1.6.0.exe → 安裝。
+   （Windows 跳「已保護您的電腦」→ 其他資訊 → 仍要執行；因為沒有付費簽章）
+6. 舊的免安裝版資料夾可以刪掉（先從工作列圖示按「結束」）。
+
+【之後怎麼更新】
+- 網頁功能（懸浮窗、計時器、藏書庫、角色…）：什麼都不用做，自動就是新的。
+- 外殼有新版時：我會給你更新後的檔案，記得 package.json 裡的 "version" 我會往上加。
+  你到 repo 把改過的檔案拖上去 → Commit。
+  Actions 打包完後，默默會在背景自己下載，跳通知「準備好了」，
+  點通知或下次重開就裝好。
+  工作列圖示選單也有「檢查更新」。
+- 更省事：在 claude.ai 設定裡連接 GitHub，我就能直接推上去，你連拖檔都不用。

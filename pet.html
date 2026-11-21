@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>桌寵</title>
+<style>
+html,body{margin:0;height:100%;background:transparent;overflow:hidden;user-select:none;font:14px/1.45 "Microsoft JhengHei","PingFang TC","Noto Sans TC",sans-serif}
+#wrap{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:flex-end;align-items:center}
+#b{--c1:#f49ac1;max-width:92%;margin-bottom:6px;background:#fffafd;color:#3b2433;border:2.5px solid #3b2433;border-radius:12px;padding:6px 10px;box-shadow:3px 3px 0 #3b2433;opacity:0;transition:opacity .25s}
+#b.on{opacity:1}
+#c{position:relative;height:calc(100% - 80px);width:100%;display:flex;justify-content:center;align-items:flex-end;transform-origin:50% 100%;animation:breathe 3.6s ease-in-out infinite;cursor:grab}
+#c img{height:100%;width:auto;max-width:100%;display:block;pointer-events:none;filter:drop-shadow(0 4px 3px rgba(0,0,0,.25))}
+#c.hop{animation:hop .7s ease-out}
+.off{opacity:.55;filter:grayscale(.6)}
+
+@keyframes breathe{50%{transform:scaleY(1.012)}}
+@keyframes hop{30%{transform:translateY(-10%)}55%{transform:translateY(0) scaleY(.95)}}
+</style>
+</head>
+<body>
+<div id="wrap"><div id="b"></div><div id="c"><img id="i" alt=""></div></div>
+<script>
+{
+const img = document.getElementById('i'), c = document.getElementById('c'), bub = document.getElementById('b');
+const IMG = { cur: '', blink: '', talk: '' };
+let lastBubble = '', bubT, talkT, mood = 'neutral';
+const DEF = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 260"><path d="M100 30c52 0 78 52 78 110s-30 106-78 106-78-48-78-106 26-110 78-110z" fill="#fffdf6" stroke="#3b2433" stroke-width="5"/><circle cx="76" cy="112" r="7.5" fill="#3b2433"/><circle cx="124" cy="112" r="7.5" fill="#3b2433"/><path d="M92 130q8 8 16 0" fill="none" stroke="#3b2433" stroke-width="4" stroke-linecap="round"/></svg>');
+img.src = DEF;
+
+// 透明區域讓滑鼠穿過去
+const cv = document.createElement('canvas'), cx = cv.getContext('2d', { willReadFrequently: true });
+function hitTest(x, y) {
+  if (bub.classList.contains('on')) { const r = bub.getBoundingClientRect(); if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return true; }
+  const r = img.getBoundingClientRect();
+  if (x < r.left || x > r.right || y < r.top || y > r.bottom || !img.naturalWidth) return false;
+  cv.width = 1; cv.height = 1;
+  const sx = (x - r.left) / r.width * img.naturalWidth, sy = (y - r.top) / r.height * img.naturalHeight;
+  try { cx.clearRect(0, 0, 1, 1); cx.drawImage(img, sx, sy, 1, 1, 0, 0, 1, 1); return cx.getImageData(0, 0, 1, 1).data[3] > 24; } catch { return true; }
+}
+let hit = null, down = null, moved = 0, rub = 0, petted = false;
+addEventListener('mousemove', e => {
+  const h = down ? true : hitTest(e.clientX, e.clientY);
+  if (h !== hit) { hit = h; window.pet.send('pet:hit', h); }
+  if (down) {
+    moved += Math.abs(e.movementX) + Math.abs(e.movementY);
+    if (e.buttons === 1 && moved > 8) window.pet.send('pet:drag', { x: e.screenX, y: e.screenY });
+  }
+});
+addEventListener('mouseleave', () => { if (!down) { hit = false; window.pet.send('pet:hit', false); } });
+c.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  down = { t: Date.now() }; moved = 0; petted = false;
+  window.pet.send('pet:drag-start', { x: e.screenX, y: e.screenY });
+});
+addEventListener('mouseup', () => {
+  if (!down) return;
+  if (moved < 8) window.pet.send('pet:poke');
+  window.pet.send('pet:drag-end'); down = null;
+});
+// 在角色上滾幾下滾輪＝摸頭
+c.addEventListener('wheel', () => { if (++rub > 6 && !petted) { petted = true; rub = 0; window.pet.send('pet:pet'); } });
+c.addEventListener('dblclick', () => window.pet.send('pet:open'));
+c.addEventListener('contextmenu', e => { e.preventDefault(); window.pet.send('pet:menu'); });
+
+function show() { img.src = IMG.cur || DEF; }
+function say(t) {
+  bub.textContent = t; bub.classList.add('on');
+  c.classList.remove('hop'); void c.offsetWidth; c.classList.add('hop');
+  clearTimeout(bubT); bubT = setTimeout(() => bub.classList.remove('on'), 4500 + t.length * 90);
+  clearInterval(talkT);
+  if (IMG.talk) { let n = 0, open = false; talkT = setInterval(() => { open = !open && n < 14; n++; img.src = open ? IMG.talk : (IMG.cur || DEF); if (n > 14) { clearInterval(talkT); show(); } }, 170); }
+}
+(function blink() {
+  setTimeout(() => {
+    if (IMG.blink && mood === 'neutral' && !bub.classList.contains('on')) { img.src = IMG.blink; setTimeout(show, 140); }
+    blink();
+  }, 2800 + Math.random() * 3500);
+})();
+
+window.pet.on('pet:state', s => {
+  c.classList.toggle('off', !!s.offline);
+  if (s.offline) return;
+  for (const k in s.imgs || {}) IMG[k] = s.imgs[k] || '';
+  if (s.imgs && 'cur' in s.imgs) show();
+  mood = s.mood || 'neutral';
+  if (s.bubble && s.bubble !== lastBubble) say(s.bubble);
+  lastBubble = s.bubble || '';
+});
+window.pet.on('pet:say', say);
+}
+</script>
+</body>
+</html>
