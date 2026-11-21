@@ -8,7 +8,8 @@ const path = require('path');
 let autoUpdater = null; try { ({ autoUpdater } = require('electron-updater')); } catch {}
 const fs = require('fs');
 
-const SHELL_VERSION = 6;
+const SHELL_VERSION = 7;
+const { sysOp } = require('./sysctl');
 const PET_URL = process.env.PET_URL || 'https://claude.ai/artifact/6PUxrm536NpmWUss4AqBKr';
 const SIZES = { 小: [210, 300], 中: [250, 360], 大: [300, 430] };
 
@@ -138,6 +139,13 @@ ipcMain.on('pet:resize-end', () => { if (!rsFrom) return; rsFrom = null; const b
 ipcMain.on('pet:zoom', (_, z) => { const b = petWin.getBounds(), k = z && z.d > 0 ? 0.92 : 1.08; setWH(b.width * k, b.height * k); });
 ipcMain.on('pet:bounds', (_, o) => { if (o && o.w && o.h) setWH(o.w, o.h); });
 // 舊版暫時畫面用的
+ipcMain.on('pet:sys', async (_, o) => { if (!o || !o.op) return; const r = await sysOp(o.op, o.args || {}).catch(() => ({ ok: false, msg: '執行失敗' })); if (petWin && !petWin.isDestroyed()) petWin.webContents.send('pet:sysr', { id: o.id, op: o.op, r }); });
+// 網頁主畫面送來的電腦控制請求（每秒取一次）
+let sysBusy = false;
+async function pollSysQ() {
+  if (sysBusy) return; sysBusy = true;
+  try { const q = await bridge(`sysq(${SHELL_VERSION})`); if (Array.isArray(q)) for (const it of q.slice(0, 5)) { sysOp(it.op, it.args || {}).catch(() => ({ ok: false, msg: '執行失敗' })).then(r => bridge(`sysres(${JSON.stringify(it.id)},${JSON.stringify(r)})`)); } } finally { sysBusy = false; }
+}
 ipcMain.on('pet:poke', () => bridge("cmd('poke')"));
 ipcMain.on('pet:pet', () => bridge("cmd('pet')"));
 
@@ -160,7 +168,7 @@ async function syncPet() {
 }
 
 // ---------- 電量（網頁的小框架讀不到，由外殼從最上層讀） ----------
-let sys = {};
+let sys = { shell: SHELL_VERSION };
 async function readSys() {
   try { sys.battery = await appWin.webContents.executeJavaScript('navigator.getBattery?navigator.getBattery().then(b=>({level:b.level,charging:b.charging,ct:b.chargingTime,dt:b.dischargingTime})):null'); } catch { sys.battery = null; }
 }
@@ -217,6 +225,10 @@ function menuItems() {
     { label: '小窗回到右下角', click: () => { cfg.pos = null; petWin.setBounds(petBounds()); saveCfg(); } },
     ...(updState ? [{ label: updState, enabled: updState.includes('重新開啟'), click: () => { quitting = true; autoUpdater.quitAndInstall(); } }] : []),
     { label: '檢查更新', visible: !!(autoUpdater && app.isPackaged), click: () => autoUpdater.checkForUpdates().then(r => { if (!r || !r.updateInfo || r.updateInfo.version === app.getVersion()) new Notification({ title: '默默', body: `已經是最新版（${app.getVersion()}）` }).show(); }).catch(() => new Notification({ title: '默默', body: '檢查更新失敗，等一下再試' }).show()) },
+    { label: '開啟 Claude', click: () => sysOp('claude') },
+    { label: 'Wi-Fi 清單', click: () => sysOp('panel', { k: 'wifi' }) },
+    { label: '藍牙裝置', click: () => sysOp('panel', { k: 'bt' }) },
+    { type: 'separator' },
     { label: '開機時自動啟動', type: 'checkbox', checked: app.getLoginItemSettings().openAtLogin, click: m => app.setLoginItemSettings({ openAtLogin: m.checked, args: ['--hidden'] }) },
     { label: '顯示 Claude 的頁面外框', type: 'checkbox', checked: !!cfg.chrome, click: m => { cfg.chrome = m.checked; saveCfg(); frame = null; appWin.loadURL(PET_URL); } },
     { label: '回到默默／重新整理', click: () => { frame = null; overlayV = ''; appWin.loadURL(PET_URL); } },
@@ -240,7 +252,7 @@ app.whenReady().then(() => {
   refreshTray();
   if (!process.argv.includes('--hidden')) appWin.once('ready-to-show', showApp);
   setInterval(syncPet, 1500);
-  setInterval(readSys, 5000); setTimeout(readSys, 3000);
+  setInterval(readSys, 5000); setTimeout(readSys, 3000); setInterval(pollSysQ, 1000);
   setupUpdater();
   setInterval(checkDue, 30000);
   setTimeout(checkDue, 8000);
