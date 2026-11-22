@@ -197,13 +197,20 @@ async function readSys() {
 
 // ---------- 自動更新（從 GitHub Releases） ----------
 let updState = '';
+// 先把所有視窗、系統匣圖示收乾淨再交給安裝程式，避免出現「默默無法關閉」
+function shutdownAll() {
+  quitting = true;
+  try { if (tray) { tray.destroy(); tray = null; } } catch {}
+  for (const w of BrowserWindow.getAllWindows()) { try { w.removeAllListeners('close'); w.destroy(); } catch {} }
+}
+function installNow() { shutdownAll(); setImmediate(() => autoUpdater.quitAndInstall(true, true)); }
 function setupUpdater() {
   if (!autoUpdater || !app.isPackaged) return;
   autoUpdater.autoDownload = true; autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.on('update-available', i => { updState = `正在下載新版 ${i.version}…`; refreshTray(); });
   autoUpdater.on('update-downloaded', i => {
     updState = `新版 ${i.version} 已下載，重新開啟就會套用`; refreshTray();
-    if (Notification.isSupported()) { const n = new Notification({ title: '默默', body: `外殼新版 ${i.version} 準備好了，點這裡馬上重新開啟。` }); n.on('click', () => { quitting = true; autoUpdater.quitAndInstall(); }); n.show(); }
+    if (Notification.isSupported()) { const n = new Notification({ title: '默默', body: `外殼新版 ${i.version} 準備好了，點這裡馬上重新開啟。` }); n.on('click', () => { installNow(); }); n.show(); }
   });
   autoUpdater.on('error', () => { updState = ''; });
   const check = () => autoUpdater.checkForUpdates().catch(() => {});
@@ -245,7 +252,7 @@ function menuItems() {
     { label: cfg.showPet ? '收起懸浮小窗' : '顯示懸浮小窗', click: () => { cfg.showPet = !cfg.showPet; cfg.showPet ? petWin.showInactive() : petWin.hide(); saveCfg(); refreshTray(); } },
     { label: '小窗大小', submenu: Object.keys(SIZES).map(k => ({ label: k, type: 'radio', checked: cfg.size === k, click: () => { cfg.size = k; cfg.wh = null; petWin.setBounds(petBounds()); saveCfg(); } })) },
     { label: '小窗回到右下角', click: () => { cfg.pos = null; petWin.setBounds(petBounds()); saveCfg(); } },
-    ...(updState ? [{ label: updState, enabled: updState.includes('重新開啟'), click: () => { quitting = true; autoUpdater.quitAndInstall(); } }] : []),
+    ...(updState ? [{ label: updState, enabled: updState.includes('重新開啟'), click: () => { installNow(); } }] : []),
     { label: '檢查更新', visible: !!(autoUpdater && app.isPackaged), click: () => autoUpdater.checkForUpdates().then(r => { if (!r || !r.updateInfo || r.updateInfo.version === app.getVersion()) new Notification({ title: '默默', body: `已經是最新版（${app.getVersion()}）` }).show(); }).catch(() => new Notification({ title: '默默', body: '檢查更新失敗，等一下再試' }).show()) },
     { label: '影音視窗', click: () => media.op({ op: 'open', site: 'ytm' }) },
     { label: '開機時自動啟動', type: 'checkbox', checked: app.getLoginItemSettings().openAtLogin, click: m => app.setLoginItemSettings({ openAtLogin: m.checked, args: ['--hidden'] }) },
@@ -259,6 +266,7 @@ function refreshTray() { tray.setContextMenu(Menu.buildFromTemplate(menuItems())
 
 app.on('second-instance', showApp);
 app.on('before-quit', () => { quitting = true; });
+app.on('will-quit', () => { for (const w of BrowserWindow.getAllWindows()) { try { w.destroy(); } catch {} } });
 app.on('window-all-closed', e => e.preventDefault());
 
 app.whenReady().then(() => {
