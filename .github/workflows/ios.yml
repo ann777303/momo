@@ -1,0 +1,42 @@
+name: 編譯 iPhone／iPad App
+
+on:
+  push:
+    branches: [main]
+    paths: ['ios/**', '.github/workflows/ios.yml']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: 產生 Xcode 專案
+        run: |
+          brew install xcodegen
+          xcodegen generate
+      - name: 編譯（不簽名）
+        run: |
+          set -o pipefail
+          xcodebuild -project PetRoom.xcodeproj -target PetRoom -configuration Release -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build > build.log 2>&1 || { grep -E "error:" build.log | head -60; tail -40 build.log; exit 1; }
+          grep -E "BUILD SUCCEEDED" build.log
+      - name: 寫入權限並打包成 IPA
+        run: |
+          APP=build/Release-iphoneos/PetRoom.app
+          codesign -f -s - --entitlements Widget/PetWidget.entitlements "$APP/PlugIns/PetWidget.appex"
+          codesign -f -s - --entitlements App/PetRoom.entitlements "$APP"
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry PetRoom.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PetRoom-ipa
+          path: ios/PetRoom.ipa
