@@ -225,7 +225,6 @@ function menuItems() {
     { label: '小窗回到右下角', click: () => { cfg.pos = null; petWin.setBounds(petBounds()); saveCfg(); } },
     ...(updState ? [{ label: updState, enabled: updState.includes('重新開啟'), click: () => { quitting = true; autoUpdater.quitAndInstall(); } }] : []),
     { label: '檢查更新', visible: !!(autoUpdater && app.isPackaged), click: () => autoUpdater.checkForUpdates().then(r => { if (!r || !r.updateInfo || r.updateInfo.version === app.getVersion()) new Notification({ title: '默默', body: `已經是最新版（${app.getVersion()}）` }).show(); }).catch(() => new Notification({ title: '默默', body: '檢查更新失敗，等一下再試' }).show()) },
-    { label: '開啟 Claude', click: () => sysOp('claude') },
     { label: 'Wi-Fi 清單', click: () => sysOp('panel', { k: 'wifi' }) },
     { label: '藍牙裝置', click: () => sysOp('panel', { k: 'bt' }) },
     { type: 'separator' },
