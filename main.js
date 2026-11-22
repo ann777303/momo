@@ -8,7 +8,8 @@ const path = require('path');
 let autoUpdater = null; try { ({ autoUpdater } = require('electron-updater')); } catch {}
 const fs = require('fs');
 
-const SHELL_VERSION = 8;
+const SHELL_VERSION = 9;
+const media = require('./media');
 const PET_URL = process.env.PET_URL || 'https://claude.ai/artifact/6PUxrm536NpmWUss4AqBKr';
 const SIZES = { 小: [210, 300], 中: [250, 360], 大: [300, 430] };
 
@@ -138,6 +139,35 @@ ipcMain.on('pet:resize-end', () => { if (!rsFrom) return; rsFrom = null; const b
 ipcMain.on('pet:zoom', (_, z) => { const b = petWin.getBounds(), k = z && z.d > 0 ? 0.92 : 1.08; setWH(b.width * k, b.height * k); });
 ipcMain.on('pet:bounds', (_, o) => { if (o && o.w && o.h) setWH(o.w, o.h); });
 // 舊版暫時畫面用的
+// ---------- 影音 ----------
+let mState = null, mThumb = '', wide = 0;
+function petWide(on) {
+  if (!petWin || petWin.isDestroyed()) return;
+  const want = on ? 190 : 0; if (want === wide) return;
+  const b = petWin.getBounds(); petWin.setBounds({ x: b.x - (want - wide), y: b.y, width: b.width + (want - wide), height: b.height }); wide = want;
+}
+media.init({
+  onMode: (m, hb) => {
+    petWide(m === 'music');
+    if (m === 'tv' && petWin && !petWin.isDestroyed()) { const pb = petWin.getBounds(); petWin.setBounds({ x: Math.max(0, hb.x - pb.width + 10), y: hb.y + hb.height - pb.height, width: pb.width, height: pb.height }); if (cfg.showPet) petWin.showInactive(); }
+  },
+  onState: s => { if (!s) { mState = null; petWide(false); bridge('mstate(null)'); } },
+  onSummary: () => { showApp(); bridge("cmd('msum')"); },
+});
+ipcMain.on('pet:media-ui', (_, e) => media.uiEvent(e));
+ipcMain.on('pet:media', async (_, o) => { const r = await media.op(o || {}).catch(e => ({ err: String(e.message || e) })); if (r && r.err && petWin) petWin.webContents.send('pet:say', r.err); });
+let mBusy = false;
+async function pollMedia() {
+  if (mBusy) return; mBusy = true;
+  try {
+    const q = await bridge(`mediaq(${SHELL_VERSION})`);
+    if (Array.isArray(q)) for (const it of q.slice(0, 5)) media.op(it).catch(e => ({ err: String(e.message || e) })).then(r => bridge(`mediares(${JSON.stringify(it.id)},${JSON.stringify(r || {})})`));
+    if (media.isOpen()) {
+      const s = await media.state();
+      if (s) { if (s.thumbData) mThumb = s.thumbData; delete s.thumbData; const sent = JSON.stringify(s); if (sent !== JSON.stringify(mState)) { mState = s; await bridge(`mstate(${JSON.stringify({ ...s, thumbData: mThumb })})`); } }
+    }
+  } finally { mBusy = false; }
+}
 ipcMain.on('pet:poke', () => bridge("cmd('poke')"));
 ipcMain.on('pet:pet', () => bridge("cmd('pet')"));
 
@@ -156,7 +186,7 @@ async function syncPet() {
   for (const [w, k] of [['cur', s.key], ['blink', s.blink], ['talk', s.talk], ['room', s.room]]) {
     if (k !== lastKeys[w]) { imgs[w] = k ? await bridge(`img(${JSON.stringify(w)})`) : ''; lastKeys[w] = k; }
   }
-  petWin.webContents.send('pet:state', { ...s, imgs, sys });
+  petWin.webContents.send('pet:state', { ...s, imgs, sys, media: media.isOpen() ? mState : null });
 }
 
 // ---------- 電量（網頁的小框架讀不到，由外殼從最上層讀） ----------
@@ -217,6 +247,7 @@ function menuItems() {
     { label: '小窗回到右下角', click: () => { cfg.pos = null; petWin.setBounds(petBounds()); saveCfg(); } },
     ...(updState ? [{ label: updState, enabled: updState.includes('重新開啟'), click: () => { quitting = true; autoUpdater.quitAndInstall(); } }] : []),
     { label: '檢查更新', visible: !!(autoUpdater && app.isPackaged), click: () => autoUpdater.checkForUpdates().then(r => { if (!r || !r.updateInfo || r.updateInfo.version === app.getVersion()) new Notification({ title: '默默', body: `已經是最新版（${app.getVersion()}）` }).show(); }).catch(() => new Notification({ title: '默默', body: '檢查更新失敗，等一下再試' }).show()) },
+    { label: '影音視窗', click: () => media.op({ op: 'open', site: 'ytm' }) },
     { label: '開機時自動啟動', type: 'checkbox', checked: app.getLoginItemSettings().openAtLogin, click: m => app.setLoginItemSettings({ openAtLogin: m.checked, args: ['--hidden'] }) },
     { label: '顯示 Claude 的頁面外框', type: 'checkbox', checked: !!cfg.chrome, click: m => { cfg.chrome = m.checked; saveCfg(); frame = null; appWin.loadURL(PET_URL); } },
     { label: '回到默默／重新整理', click: () => { frame = null; overlayV = ''; appWin.loadURL(PET_URL); } },
@@ -240,6 +271,7 @@ app.whenReady().then(() => {
   refreshTray();
   if (!process.argv.includes('--hidden')) appWin.once('ready-to-show', showApp);
   setInterval(syncPet, 1500);
+  setInterval(pollMedia, 900);
   setInterval(readSys, 5000); setTimeout(readSys, 3000);
   setupUpdater();
   setInterval(checkDue, 30000);

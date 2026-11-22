@@ -1,7 +1,7 @@
 {
   "name": "pet-room",
   "productName": "默默",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "把默默放到桌面最上層，並用系統通知提醒待辦",
   "main": "main.js",
   "scripts": {
@@ -22,7 +22,8 @@
       "preload-pet.js",
       "pet.html",
       "icon.png",
-      "tray.png"
+      "tray.png",
+      "media.js"
     ],
     "icon": "icon.png",
     "win": {
