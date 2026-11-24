@@ -3,16 +3,18 @@
 // 1. 背景開著你的「默默」網頁（登入一次就好）
 // 2. 開一個永遠在最上層的懸浮小窗；小窗的畫面由網頁提供（__petBridge.overlay）
 // 3. 定時向網頁詢問到期的待辦，用系統通知跳出來
-const { app, BrowserWindow, Tray, Menu, Notification, ipcMain, screen, shell, nativeImage, session } = require('electron');
+const { app, BrowserWindow, Tray, Menu, Notification, ipcMain, screen, shell, nativeImage, session, net } = require('electron');
 const path = require('path');
 let autoUpdater = null; try { ({ autoUpdater } = require('electron-updater')); } catch {}
 const fs = require('fs');
 
-const SHELL_VERSION = 9;
+const SHELL_VERSION = 10;
 const media = require('./media');
+const off = require('./offline');
 const PET_URL = process.env.PET_URL || 'https://claude.ai/artifact/6PUxrm536NpmWUss4AqBKr';
 const SIZES = { 小: [210, 300], 中: [250, 360], 大: [300, 430] };
 
+if (process.env.MOMO_USERDATA) app.setPath('userData', process.env.MOMO_USERDATA);   // 測試用
 if (!app.requestSingleInstanceLock()) app.quit();
 app.userAgentFallback = app.userAgentFallback.replace(/\s(pet-room|默默|Electron)\/\S+/g, '');
 if (process.platform === 'win32') app.setAppUserModelId('tw.petroom.desktop');
@@ -25,20 +27,34 @@ let saveT;
 function saveCfg() { clearTimeout(saveT); saveT = setTimeout(() => { try { fs.writeFileSync(cfgPath(), JSON.stringify(cfg)); } catch {} }, 400); }
 
 let appWin, petWin, tray, quitting = false, frame = null, lastKeys = {}, missCount = 0, overlayV = '';
+let mode = 'online', offState = '', offSince = 0;   // online：開 claude.ai 上的默默；offline：開電腦裡存的離線版
 
 // ---------- 主視窗（網頁） ----------
-function createAppWin() {
+const NET_ERR = new Set([-2, -7, -21, -100, -101, -102, -104, -105, -106, -109, -118, -130, -137, -138, -324]);
+function createAppWin(m = 'online') {
+  mode = m;
+  const offline = m === 'offline';
+  if (offline) off.offSession();
   appWin = new BrowserWindow({
     width: 1180, height: 800, show: false, title: '默默', icon: path.join(__dirname, 'icon.png'),
-    webPreferences: { partition: 'persist:pet', backgroundThrottling: false }
+    webPreferences: offline
+      ? { partition: 'persist:off', backgroundThrottling: false, preload: path.join(__dirname, 'preload-off.js'), contextIsolation: true, sandbox: true }
+      : { partition: 'persist:pet', backgroundThrottling: false }
   });
   appWin.removeMenu();
+  appWin.on('close', e => { if (!quitting) { e.preventDefault(); appWin.hide(); } });
+  frame = null; overlayV = ''; lastKeys = {};
+  if (offline) {
+    appWin.loadURL(off.OFF_URL);
+    appWin.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:/.test(url)) shell.openExternal(url); return { action: 'deny' }; });
+    return;
+  }
+  appWin.webContents.on('did-fail-load', (_, code, desc, url, isMain) => { if (isMain && NET_ERR.has(code)) goOffline('連不上網路'); });
   // 語音聊天要用麥克風；只允許 Claude 自己的網址
   const ses = session.fromPartition('persist:pet');
   const okHost = u => { try { const h = new URL(u).hostname; return h === 'claude.ai' || h.endsWith('.claude.ai') || h.endsWith('claudeusercontent.com'); } catch { return false; } };
   ses.setPermissionRequestHandler((wc, perm, cb, d) => cb(['media', 'audioCapture', 'speaker-selection', 'notifications', 'clipboard-sanitized-write'].includes(perm) && okHost(d && d.requestingUrl || wc.getURL())));
   appWin.loadURL(PET_URL);
-  appWin.on('close', e => { if (!quitting) { e.preventDefault(); appWin.hide(); } });
   appWin.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https:\/\/(claude\.ai|accounts\.google\.com|appleid\.apple\.com)\//.test(url)) return { action: 'allow' };
     shell.openExternal(url); return { action: 'deny' };
@@ -50,6 +66,49 @@ function createAppWin() {
   appWin.webContents.on('did-frame-navigate', () => { frame = null; });
 }
 const showApp = () => { appWin.show(); appWin.focus(); };
+
+// ---------- 離線版切換 ----------
+function swapWin(m) {
+  const vis = appWin && !appWin.isDestroyed() && appWin.isVisible(), b = appWin && !appWin.isDestroyed() ? appWin.getBounds() : null;
+  if (appWin && !appWin.isDestroyed()) { appWin.removeAllListeners('close'); appWin.destroy(); }
+  createAppWin(m);
+  if (b) appWin.setBounds(b);
+  if (vis) appWin.once('ready-to-show', showApp);
+  refreshTray && tray && refreshTray();
+}
+function note(body) { if (Notification.isSupported()) new Notification({ title: '默默', body }).show(); }
+function goOffline(why) {
+  if (mode === 'offline' || quitting) return;
+  if (!off.ready()) { offState = '沒有網路，而且還沒有離線版（要先連網路打開默默一次）'; if (tray) refreshTray(); return; }
+  offSince = Date.now(); swapWin('offline'); offState = '離線模式：資料先存在電腦裡，連上網路會自動同步';
+  note(`${why || '沒有網路'}，先切換成離線版。聊天要等連上網路才能用，其他功能照常。`);
+}
+async function goOnline() {
+  if (mode === 'online') return;
+  swapWin('online'); offState = '已連上網路，正在同步離線時的變更…'; refreshTray();
+  for (let i = 0; i < 60; i++) {           // 最多等 3 分鐘讓網頁登入、同步好
+    await new Promise(r => setTimeout(r, 3000));
+    if (mode !== 'online') return;
+    if (await bridge('offReady()')) {
+      const n = off.hasPending() ? await off.mergePending(bridge) : 0;
+      offState = ''; refreshTray();
+      if (n) note('網路回來了，離線時改的東西已經同步上雲端。');
+      setTimeout(() => off.refresh(bridge), 20000);
+      return;
+    }
+  }
+}
+setInterval(async () => {
+  if (quitting) return;
+  if (mode === 'offline') { if (Date.now() - offSince > 60000 && await off.online(PET_URL)) goOnline(); }
+  else if (!net.isOnline()) goOffline('網路斷了');
+}, 30000);
+async function refreshOffline(manual) {
+  if (mode !== 'online') return;
+  const ok = await off.refresh(bridge, t => { offState = t; });
+  offState = ''; if (tray) refreshTray();
+  if (manual) note(ok ? '離線版更新好了，沒網路時也能打開默默。' : '現在沒辦法更新離線版，等默默載入完成再試一次。');
+}
 
 // 登入後 Claude 會跳到首頁或聊天畫面：自動帶回默默
 function backHome(url) {
@@ -254,10 +313,14 @@ function menuItems() {
     { label: '小窗回到右下角', click: () => { cfg.pos = null; petWin.setBounds(petBounds()); saveCfg(); } },
     ...(updState ? [{ label: updState, enabled: updState.includes('重新開啟'), click: () => { installNow(); } }] : []),
     { label: '檢查更新', visible: !!(autoUpdater && app.isPackaged), click: () => autoUpdater.checkForUpdates().then(r => { if (!r || !r.updateInfo || r.updateInfo.version === app.getVersion()) new Notification({ title: '默默', body: `已經是最新版（${app.getVersion()}）` }).show(); }).catch(() => new Notification({ title: '默默', body: '檢查更新失敗，等一下再試' }).show()) },
+    ...(offState ? [{ label: offState, enabled: false }] : []),
+    mode === 'offline'
+      ? { label: '試著連上網路', click: async () => { if (await off.online(PET_URL)) goOnline(); else note('還是連不上網路，等一下再試。'); } }
+      : { label: '更新離線版' + (off.lastAt() ? `（上次 ${new Date(off.lastAt()).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}）` : ''), click: () => refreshOffline(true) },
     { label: '影音視窗', click: () => media.op({ op: 'open', site: 'ytm' }) },
     { label: '開機時自動啟動', type: 'checkbox', checked: app.getLoginItemSettings().openAtLogin, click: m => app.setLoginItemSettings({ openAtLogin: m.checked, args: ['--hidden'] }) },
-    { label: '顯示 Claude 的頁面外框', type: 'checkbox', checked: !!cfg.chrome, click: m => { cfg.chrome = m.checked; saveCfg(); frame = null; appWin.loadURL(PET_URL); } },
-    { label: '回到默默／重新整理', click: () => { frame = null; overlayV = ''; appWin.loadURL(PET_URL); } },
+    { label: '顯示 Claude 的頁面外框', type: 'checkbox', checked: !!cfg.chrome, enabled: mode === 'online', click: m => { cfg.chrome = m.checked; saveCfg(); frame = null; appWin.loadURL(PET_URL); } },
+    { label: '回到默默／重新整理', click: () => { frame = null; overlayV = ''; appWin.loadURL(mode === 'offline' ? off.OFF_URL : PET_URL); } },
     { type: 'separator' },
     { label: '結束', click: () => { quitting = true; app.quit(); } }
   ];
@@ -271,7 +334,8 @@ app.on('window-all-closed', e => e.preventDefault());
 
 app.whenReady().then(() => {
   loadCfg();
-  createAppWin();
+  createAppWin(!net.isOnline() && off.ready() ? 'offline' : 'online');
+  if (mode === 'offline') offState = '離線模式：資料先存在電腦裡，連上網路會自動同步';
   createPetWin();
   tray = new Tray(nativeImage.createFromPath(path.join(__dirname, 'tray.png')));
   tray.setToolTip('默默');
@@ -283,6 +347,8 @@ app.whenReady().then(() => {
   setInterval(readSys, 5000); setTimeout(readSys, 3000);
   setupUpdater();
   setInterval(checkDue, 30000);
+  // 離線版：載入後 40 秒更新一次，之後每 20 分鐘
+  setTimeout(() => refreshOffline(false), 40000); setInterval(() => refreshOffline(false), 20 * 60e3);
   setTimeout(checkDue, 8000);
   screen.on('display-removed', () => { cfg.pos = null; petWin.setBounds(petBounds()); });
 });

@@ -14,6 +14,7 @@ enum SharedStore {
     }
 
     static var imageURL: URL { container.appendingPathComponent("pet.png") }
+    static var roomURL: URL { container.appendingPathComponent("room.png") }
 }
 
 struct WidgetInfo: Codable {

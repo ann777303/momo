@@ -25,6 +25,13 @@ struct PetPayload: Decodable {
     let bubbleAt: Double?
     let line: String?
     let timer: Timer?
+    // v3：房間圖（有換才傳）、心情、天氣與反應特效、全身／特寫
+    let room: String?
+    let mood: String?
+    let amb: String?
+    let fx: String?
+    let fxAt: Double?
+    let fmode: String?
 }
 
 /// 避免 WKUserContentController 強參照造成記憶體循環
@@ -181,6 +188,10 @@ final class PetWebModel: NSObject, ObservableObject {
             } else {
                 try? FileManager.default.removeItem(at: SharedStore.imageURL) // 預設角色：小工具用內建圖示
             }
+        }
+        if let room = p.room, let comma = room.firstIndex(of: ","),
+           let data = Data(base64Encoded: String(room[room.index(after: comma)...])) {
+            try? data.write(to: SharedStore.roomURL, options: .atomic)
         }
         WidgetCenter.shared.reloadAllTimelines()
     }

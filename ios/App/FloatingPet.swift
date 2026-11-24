@@ -20,6 +20,10 @@ struct PetLive {
     var timerAcc: Double = 0
     var timerDur: Double = 0
     var timerActive = false
+    var mood = "neutral"
+    var amb = ""
+    var fx = ""
+    var fxAt = Date.distantPast
 }
 
 /// 用「子母畫面」做成浮在所有 App 上面的小窗：
@@ -41,6 +45,9 @@ final class FloatingPet: NSObject, ObservableObject {
     private var closeUp = false
     private var image: UIImage?
     private var imageStamp: Date?
+    private var roomImage: UIImage?
+    private var roomStamp: Date?
+    private var lastFmode = ""
     var live = PetLive()
 
     static let size = CGSize(width: 360, height: 480)
@@ -65,7 +72,7 @@ final class FloatingPet: NSObject, ObservableObject {
         }
         startAudio()
         render()
-        tick = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        tick = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.render() }
         }
     }
@@ -111,6 +118,10 @@ final class FloatingPet: NSObject, ObservableObject {
         if let l = p.line { live.line = l }
         live.nextTitle = p.next?.title
         live.nextDate = p.next.flatMap { LocalTime.parse($0.at) }
+        if let m = p.mood { live.mood = m }
+        if let a = p.amb { live.amb = a }
+        if let f = p.fx, !f.isEmpty, let at = p.fxAt { live.fx = f; live.fxAt = Date(timeIntervalSince1970: at / 1000) }
+        if let fm = p.fmode, fm != lastFmode { lastFmode = fm; closeUp = fm == "close" }
         if let t = p.timer {
             live.timerMode = t.mode; live.timerRun = t.run; live.timerStart = t.start
             live.timerAcc = t.acc; live.timerDur = t.dur; live.timerActive = t.active
@@ -168,32 +179,51 @@ final class FloatingPet: NSObject, ObservableObject {
             let rs: [NSAttributedString.Key: Any] = [.font: UIFont.monospacedDigitSystemFont(ofSize: 18, weight: .semibold), .foregroundColor: ink]
             let rw = (right as NSString).size(withAttributes: rs).width
             (right as NSString).draw(at: CGPoint(x: W - 24 - rw, y: 23), withAttributes: rs)
-            // 房間格子背景
+            // 房間：網頁畫好的像素房間（含自己佈置的家具）
             let room = CGRect(x: 14, y: 62, width: W - 28, height: H - 150)
             UIColor(white: 1, alpha: 0.85).setFill(); g.fill(room)
             pink.setFill()
             var yy = room.minY + 6
             while yy < room.maxY { var xx = room.minX + 6; while xx < room.maxX { g.fill(CGRect(x: xx, y: yy, width: 3, height: 3)); xx += 18 }; yy += 18 }
-            ink.setStroke(); g.setLineWidth(3); g.stroke(room)
-            // 角色
             g.saveGState(); g.clip(to: room.insetBy(dx: 2, dy: 2))
+            let now = Date().timeIntervalSince1970
+            var feet = CGPoint(x: room.midX, y: room.maxY - 4)
+            var charH = room.height * 0.92
+            if !closeUp, let r = roomPic(), r.size.width > 0 {
+                let rw = room.width * 0.96, rh = rw * r.size.height / r.size.width
+                let rr = CGRect(x: room.midX - rw / 2, y: room.maxY - room.height * 0.03 - rh, width: rw, height: rh)
+                g.interpolationQuality = .none
+                r.draw(in: rr)
+                g.interpolationQuality = .default
+                feet = CGPoint(x: room.midX, y: room.maxY - room.height * 0.04)
+                charH = room.height * 0.76
+            }
+            if live.amb == "wisp" || ["snow", "rain", "blossoms", "leaves", "stars"].contains(live.amb) { drawWeather(g, room, now, behind: true) }
+            // 角色
             if let img = petImage(), img.size.width > 0 {
-                let breathe = 1 + 0.012 * sin(Date().timeIntervalSince1970 * 2)
+                let breathe = 1 + 0.012 * sin(now * 2)
                 if closeUp {
                     let s = max(room.width / img.size.width, room.height * 2.2 / img.size.height)
                     let w = img.size.width * s, h = img.size.height * s
                     img.draw(in: CGRect(x: room.midX - w / 2, y: room.minY - h * 0.05, width: w, height: h))
                 } else {
-                    let s = min(room.width * 0.92 / img.size.width, room.height * 0.92 / img.size.height)
+                    let s = min(room.width * 0.92 / img.size.width, charH / img.size.height)
                     let w = img.size.width * s, h = img.size.height * s * breathe
-                    img.draw(in: CGRect(x: room.midX - w / 2, y: room.maxY - h - 4, width: w, height: h))
+                    img.draw(in: CGRect(x: feet.x - w / 2, y: feet.y - h, width: w, height: h))
+                    head = CGPoint(x: feet.x, y: feet.y - h)
+                    charW = w
                 }
             } else {
                 let face = CGRect(x: room.midX - 70, y: room.midY - 90, width: 140, height: 180)
                 UIColor.white.setFill(); g.fillEllipse(in: face); ink.setStroke(); g.setLineWidth(5); g.strokeEllipse(in: face)
                 ink.setFill(); g.fillEllipse(in: CGRect(x: face.midX - 32, y: face.midY - 30, width: 14, height: 14)); g.fillEllipse(in: CGRect(x: face.midX + 18, y: face.midY - 30, width: 14, height: 14))
+                head = CGPoint(x: face.midX, y: face.minY); charW = face.width
             }
+            if ["butterfly"].contains(live.amb) { drawWeather(g, room, now, behind: false) }
+            drawReaction(g, now)
             g.restoreGState()
+            ink.setStroke(); g.setLineWidth(3); g.stroke(room)
+            if !closeUp { drawDateCard(g, room, ink: ink, accent: accent) }
             // 對話泡泡（最近 25 秒內說的話）
             if !live.bubble.isEmpty, Date().timeIntervalSince(live.bubbleAt) < 25 {
                 let bs: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 18, weight: .medium), .foregroundColor: ink]
@@ -224,6 +254,116 @@ final class FloatingPet: NSObject, ObservableObject {
                 UIColor(white: 0, alpha: 0.35).setFill(); g.fill(CGRect(origin: .zero, size: Self.size))
                 let ps: [NSAttributedString.Key: Any] = [.font: UIFont.boldSystemFont(ofSize: 30), .foregroundColor: UIColor.white]
                 ("休息中" as NSString).draw(at: CGPoint(x: W / 2 - 45, y: H / 2 - 20), withAttributes: ps)
+            }
+        }
+    }
+
+    // MARK: - 房間、日期小卡、特效
+
+    private var head = CGPoint.zero
+    private var charW: CGFloat = 120
+
+    private func roomPic() -> UIImage? {
+        let url = SharedStore.roomURL
+        let stamp = (try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date
+        if stamp != roomStamp {
+            roomStamp = stamp
+            roomImage = stamp == nil ? nil : UIImage(contentsOfFile: url.path)
+        }
+        return roomImage
+    }
+
+    /// 跟電腦版懸浮視窗一樣的日期小卡：上面日期、下面時段
+    private func drawDateCard(_ g: CGContext, _ room: CGRect, ink: UIColor, accent: UIColor) {
+        let d = Date(), cal = Calendar.current
+        let wk = ["日", "一", "二", "三", "四", "五", "六"][cal.component(.weekday, from: d) - 1]
+        let line1 = "\(cal.component(.month, from: d)) 月 \(cal.component(.day, from: d)) 日（\(wk)）" as NSString
+        let h = cal.component(.hour, from: d)
+        let tod = (h < 5 ? "深夜" : h < 11 ? "朝" : h < 17 ? "昼" : h < 19 ? "夕" : "夜") as NSString
+        let f1: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 13, weight: .medium), .foregroundColor: ink]
+        let hot = UIColor(red: 1, green: 0.36, blue: 0.58, alpha: 1)
+        let f2: [NSAttributedString.Key: Any] = [.font: UIFont.boldSystemFont(ofSize: 26), .foregroundColor: hot]
+        let f2s: [NSAttributedString.Key: Any] = [.font: UIFont.boldSystemFont(ofSize: 26), .foregroundColor: ink]
+        let s1 = line1.size(withAttributes: f1), s2 = tod.size(withAttributes: f2)
+        let w = max(s1.width, s2.width) + 20, hh = s1.height + s2.height + 8
+        let r = CGRect(x: room.minX + 12, y: room.minY + 12, width: w, height: hh)
+        ink.withAlphaComponent(0.3).setFill(); g.fill(r.offsetBy(dx: 4, dy: 4))
+        UIColor.white.setFill(); g.fill(r)
+        accent.withAlphaComponent(0.5).setStroke(); g.setLineWidth(2); g.stroke(r.insetBy(dx: 3, dy: 3))
+        ink.setStroke(); g.setLineWidth(3); g.stroke(r)
+        line1.draw(at: CGPoint(x: r.midX - s1.width / 2, y: r.minY + 4), withAttributes: f1)
+        let p2 = CGPoint(x: r.midX - s2.width / 2, y: r.minY + 2 + s1.height)
+        tod.draw(at: CGPoint(x: p2.x + 1.5, y: p2.y + 1.5), withAttributes: f2s)
+        tod.draw(at: p2, withAttributes: f2)
+    }
+
+    private static func rnd(_ i: Int, _ s: Int) -> CGFloat {
+        var x = UInt32(truncatingIfNeeded: i &* 374761393 &+ s &* 668265263)
+        x = (x ^ (x >> 13)) &* 1274126177
+        x ^= x >> 16
+        return CGFloat(x & 0xFFFF) / 65535
+    }
+
+    /// 背景天氣：跟網頁一樣依季節和時間（雪、櫻花、落葉、雨、流星、蝴蝶、夜晚的小火光）
+    private func drawWeather(_ g: CGContext, _ room: CGRect, _ t: Double, behind: Bool) {
+        let R = Self.rnd
+        switch live.amb {
+        case "snow", "blossoms", "leaves", "rain":
+            let n = live.amb == "rain" ? 26 : 18
+            for i in 0..<n {
+                let sp = live.amb == "rain" ? 160.0 : 26.0 + Double(R(i, 2)) * 22
+                let y = room.minY + CGFloat((Double(R(i, 1)) * Double(room.height) + t * sp).truncatingRemainder(dividingBy: Double(room.height)))
+                let x = room.minX + R(i, 3) * room.width + CGFloat(sin(t * 1.3 + Double(i))) * (live.amb == "rain" ? 0 : 8)
+                switch live.amb {
+                case "snow": UIColor.white.setFill(); g.fill(CGRect(x: x, y: y, width: 4, height: 4))
+                case "rain": UIColor(red: 0.55, green: 0.7, blue: 0.95, alpha: 0.8).setFill(); g.fill(CGRect(x: x, y: y, width: 2, height: 9))
+                case "blossoms": UIColor(red: 1, green: 0.72, blue: 0.82, alpha: 1).setFill(); g.fill(CGRect(x: x, y: y, width: 5, height: 4)); UIColor.white.setFill(); g.fill(CGRect(x: x + 1, y: y + 1, width: 2, height: 2))
+                default: (i % 2 == 0 ? UIColor(red: 0.93, green: 0.55, blue: 0.2, alpha: 1) : UIColor(red: 0.85, green: 0.35, blue: 0.2, alpha: 1)).setFill(); g.fill(CGRect(x: x, y: y, width: 5, height: 5))
+                }
+            }
+        case "stars":
+            for i in 0..<14 {
+                let on = (Int(t * 2) + i) % 5 != 0
+                if on { UIColor(red: 1, green: 0.95, blue: 0.6, alpha: 1).setFill(); g.fill(CGRect(x: room.minX + R(i, 4) * room.width, y: room.minY + R(i, 5) * room.height * 0.5, width: 3, height: 3)) }
+            }
+        case "wisp":
+            let c = CGPoint(x: head.x - charW * 0.55 + CGFloat(sin(t * 0.8)) * 10, y: head.y + 40 + CGFloat(sin(t * 1.7)) * 8)
+            UIColor(red: 0.45, green: 0.95, blue: 0.95, alpha: 0.25).setFill(); g.fillEllipse(in: CGRect(x: c.x - 22, y: c.y - 22, width: 44, height: 44))
+            UIColor(red: 0.55, green: 1, blue: 0.95, alpha: 0.9).setFill(); g.fillEllipse(in: CGRect(x: c.x - 11, y: c.y - 11, width: 22, height: 22))
+        case "butterfly":
+            let c = CGPoint(x: head.x + charW * 0.45 + CGFloat(sin(t * 0.9)) * 18, y: head.y + 30 + CGFloat(cos(t * 1.3)) * 12)
+            let open = Int(t * 4) % 2 == 0
+            UIColor(red: 1, green: 0.82, blue: 0.4, alpha: 1).setFill()
+            g.fill(CGRect(x: c.x - (open ? 9 : 5), y: c.y - 6, width: open ? 8 : 4, height: 10)); g.fill(CGRect(x: c.x + 1, y: c.y - 6, width: open ? 8 : 4, height: 10))
+            UIColor(red: 0.15, green: 0.14, blue: 0.39, alpha: 1).setFill(); g.fill(CGRect(x: c.x - 1, y: c.y - 7, width: 2, height: 12))
+        default: break
+        }
+    }
+
+    /// 心情反應特效（愛心、睡覺 Z、驚嘆號、彩紙）：觸發後 3 秒內顯示
+    private func drawReaction(_ g: CGContext, _ t: Double) {
+        let age = Date().timeIntervalSince(live.fxAt)
+        guard age >= 0, age < 3, !live.fx.isEmpty else { return }
+        let R = Self.rnd
+        func glyph(_ s: String, _ p: CGPoint, _ size: CGFloat, _ c: UIColor) {
+            let a: [NSAttributedString.Key: Any] = [.font: UIFont.boldSystemFont(ofSize: size), .foregroundColor: c]
+            (s as NSString).draw(at: p, withAttributes: a)
+        }
+        let hot = UIColor(red: 1, green: 0.36, blue: 0.58, alpha: 1)
+        switch live.fx {
+        case "charmed", "heart":
+            for i in 0..<4 { glyph("♥", CGPoint(x: head.x - charW * 0.4 + R(i, 7) * charW * 0.8, y: head.y + 30 - CGFloat(age) * 26 - CGFloat(i) * 8), 18 + R(i, 8) * 8, hot) }
+        case "sleep":
+            for i in 0..<3 { glyph("Z", CGPoint(x: head.x + charW * 0.25 + CGFloat(i) * 12, y: head.y + 10 - CGFloat(age) * 14 - CGFloat(i) * 16), 16 + CGFloat(i) * 5, UIColor(red: 0.45, green: 0.5, blue: 0.95, alpha: 1)) }
+        case "exclaim":
+            glyph("！", CGPoint(x: head.x + charW * 0.2, y: head.y - 4 - CGFloat(min(age, 0.3)) * 20), 30, hot)
+        default:
+            let cols: [UIColor] = [hot, UIColor(red: 1, green: 0.82, blue: 0.4, alpha: 1), UIColor(red: 0.62, green: 0.85, blue: 0.9, alpha: 1), UIColor.white]
+            for i in 0..<22 {
+                cols[i % cols.count].setFill()
+                let x = head.x - charW * 0.7 + R(i, 9) * charW * 1.4
+                let y = head.y - 20 + CGFloat(age) * (60 + R(i, 10) * 80) - 30 * CGFloat(max(0, 1 - age))
+                g.fill(CGRect(x: x, y: y, width: 5, height: 5))
             }
         }
     }
